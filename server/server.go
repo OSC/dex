@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -39,6 +40,8 @@ import (
 	"github.com/dexidp/dex/connector/saml"
 	"github.com/dexidp/dex/pkg/log"
 	"github.com/dexidp/dex/storage"
+	"github.com/gorilla/securecookie"
+	"github.com/gorilla/sessions"
 )
 
 // LocalConnector is the local passwordDB connector which is an internal
@@ -142,6 +145,7 @@ type Server struct {
 	storage storage.Storage
 
 	mux http.Handler
+	sessionStore *sessions.CookieStore
 
 	templates *templates
 
@@ -222,6 +226,27 @@ func newServer(ctx context.Context, c Config, rotationStrategy rotationStrategy)
 		now = time.Now
 	}
 
+	authKey := []byte(os.Getenv("DEX_SESSION_AUTHKEY"))
+	if len(authKey) == 0 {
+		authKey = securecookie.GenerateRandomKey(32)
+	}
+	encKey := []byte(os.Getenv("DEX_SESSION_ENCKEY"))
+	if len(encKey) == 0 {
+		encKey = securecookie.GenerateRandomKey(32)
+	}
+	sessionStore := sessions.NewCookieStore(authKey, encKey)
+	maxageEnv := os.Getenv("DEX_SESSION_MAXAGE_SECONDS")
+	if len(maxageEnv) > 0 {
+		maxage, err := strconv.Atoi(maxageEnv)
+		if err != nil {
+			return nil, fmt.Errorf("server: failed to load web static: %v", err)
+		}
+		sessionStore.MaxAge(maxage)
+	}
+	sessionStore.Options.Secure = true
+	sessionStore.Options.SameSite = http.SameSiteStrictMode
+	sessionStore.Options.HttpOnly = true
+
 	s := &Server{
 		issuerURL:              *issuerURL,
 		connectors:             make(map[string]Connector),
@@ -232,6 +257,7 @@ func newServer(ctx context.Context, c Config, rotationStrategy rotationStrategy)
 		deviceRequestsValidFor: value(c.DeviceRequestsValidFor, 5*time.Minute),
 		skipApproval:           c.SkipApprovalScreen,
 		alwaysShowLogin:        c.AlwaysShowLoginScreen,
+		sessionStore:           sessionStore,
 		now:                    now,
 		templates:              tmpls,
 		passwordConnector:      c.PasswordConnector,
